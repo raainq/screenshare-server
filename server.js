@@ -35,7 +35,6 @@ function writeJson(res, statusCode, obj, extraHeaders = {}) {
 }
 
 const server = http.createServer(async (req, res) => {
-  // CORS (viewer가 다른 도메인에서 열릴 수 있어서 허용)
   if (req.url === '/ice') {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
@@ -107,7 +106,6 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // offer/answer/candidate/pointer 등 모든 메시지 릴레이
     if (!roomId || !rooms.has(roomId)) return;
     const targetRole = role === 'host' ? 'viewer' : 'host';
     const targetWs = rooms.get(roomId)?.[targetRole];
