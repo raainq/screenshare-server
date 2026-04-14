@@ -6,6 +6,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "twilio": "^5.9.0",
     "ws": "^8.16.0"
   }
 }
