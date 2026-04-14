@@ -17,7 +17,7 @@ async function getTwilioIceServers() {
   if (cachedIceServers && (now - cachedIceAtMs) < ICE_CACHE_MS) return cachedIceServers;
 
   const token = await twilioClient.tokens.create();
-  const ice = token && token.ice_servers;
+  const ice = token && (token.ice_servers || token.iceServers);
   if (!Array.isArray(ice) || ice.length === 0) throw new Error('Twilio token returned empty ice_servers');
 
   cachedIceServers = ice;
