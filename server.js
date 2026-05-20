@@ -11,15 +11,22 @@ let cachedIceAtMs = 0;
 const ICE_CACHE_MS = 30 * 60 * 1000;
 
 async function getTwilioIceServers() {
-  if (!twilioClient) throw new Error('Twilio env missing: TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN');
+  if (!twilioClient) {
+    const err = new Error('Twilio env missing: TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN');
+    err.code = 'TWILIO_ENV_MISSING';
+    throw err;
+  }
 
   const now = Date.now();
   if (cachedIceServers && (now - cachedIceAtMs) < ICE_CACHE_MS) return cachedIceServers;
 
   const token = await twilioClient.tokens.create();
-  const ice = token && (token.ice_servers || token.iceServers);
-  if (!Array.isArray(ice) || ice.length === 0) throw new Error('Twilio token returned empty ice_servers');
-
+  const ice = token && token.ice_servers;
+  if (!Array.isArray(ice) || ice.length === 0) {
+    const err = new Error('Twilio token returned empty ice_servers');
+    err.code = 'TWILIO_ICE_EMPTY';
+    throw err;
+  }
   cachedIceServers = ice;
   cachedIceAtMs = now;
   return ice;
@@ -35,6 +42,7 @@ function writeJson(res, statusCode, obj, extraHeaders = {}) {
 }
 
 const server = http.createServer(async (req, res) => {
+  // Basic CORS for /ice (viewer may be served from a different origin).
   if (req.url === '/ice') {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
@@ -46,22 +54,15 @@ const server = http.createServer(async (req, res) => {
       res.end();
       return;
     }
-
     if (req.method !== 'GET') {
       writeJson(res, 405, { error: 'method_not_allowed' }, { 'Access-Control-Allow-Origin': '*' });
       return;
     }
-
     try {
       const iceServers = await getTwilioIceServers();
       writeJson(res, 200, { iceServers }, { 'Access-Control-Allow-Origin': '*' });
     } catch (e) {
-      writeJson(
-        res,
-        500,
-        { error: 'failed_to_get_ice', message: String(e && e.message ? e.message : e) },
-        { 'Access-Control-Allow-Origin': '*' }
-      );
+      writeJson(res, 500, { error: 'failed_to_get_ice', message: String(e && e.message ? e.message : e) }, { 'Access-Control-Allow-Origin': '*' });
     }
     return;
   }
@@ -70,10 +71,24 @@ const server = http.createServer(async (req, res) => {
   res.end('Screen Share Signaling Server Running');
 });
 
+// Render 로드밸런서(~60s 유휴 컷오프) 대응: 30초마다 ping → 응답 없으면 종료
 const wss = new WebSocket.Server({ server });
+const PING_INTERVAL_MS = 30_000;
+
+const keepAlive = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (!ws.isAlive) { ws.terminate(); return; }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, PING_INTERVAL_MS);
+wss.on('close', () => clearInterval(keepAlive));
+
 const rooms = new Map();
 
 wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
   let roomId = null;
   let role = null;
 
@@ -96,6 +111,7 @@ wss.on('connection', (ws) => {
 
       if (!rooms.has(roomId)) rooms.set(roomId, {});
       rooms.get(roomId)[role] = ws;
+      console.log(`[${roomId}] ${role} joined`);
 
       const otherRole = role === 'host' ? 'viewer' : 'host';
       const otherWs = rooms.get(roomId)?.[otherRole];
@@ -106,6 +122,7 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // pointer 포함 모든 메시지 릴레이
     if (!roomId || !rooms.has(roomId)) return;
     const targetRole = role === 'host' ? 'viewer' : 'host';
     const targetWs = rooms.get(roomId)?.[targetRole];
@@ -118,7 +135,7 @@ wss.on('connection', (ws) => {
     if (!roomId || !rooms.has(roomId)) return;
     const room = rooms.get(roomId);
     delete room[role];
-
+    console.log(`[${roomId}] ${role} disconnected`);
     const otherRole = role === 'host' ? 'viewer' : 'host';
     const otherWs = room[otherRole];
     if (otherWs && otherWs.readyState === WebSocket.OPEN) {
